@@ -30,7 +30,10 @@ final class MenuBarController: NSObject {
             statusItem = item
         }
 
-        statusItem?.menu = makeMenu()
+        statusItem?.menu = nil
+        statusItem?.button?.target = self
+        statusItem?.button?.action = #selector(handleStatusItemClick)
+        statusItem?.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
     }
 
     private func removeStatusItem() {
@@ -47,8 +50,8 @@ final class MenuBarController: NSObject {
 
         menu.addItem(
             NSMenuItem(
-                title: "显示/隐藏 LaunchOS",
-                action: #selector(toggleLaunchOS),
+                title: "打开 LaunchOS",
+                action: #selector(showLaunchOS),
                 keyEquivalent: ""
             )
         )
@@ -82,8 +85,26 @@ final class MenuBarController: NSObject {
         return menu
     }
 
-    @objc private func toggleLaunchOS() {
-        LauncherWindowController.toggleLauncher()
+    @objc private func handleStatusItemClick() {
+        if NSApp.currentEvent?.type == .rightMouseUp {
+            showMenu()
+        } else {
+            showLaunchOS()
+        }
+    }
+
+    @objc private func showLaunchOS() {
+        LauncherWindowController.showLauncher()
+    }
+
+    private func showMenu() {
+        guard let statusItem else {
+            return
+        }
+
+        statusItem.menu = makeMenu()
+        statusItem.button?.performClick(nil)
+        statusItem.menu = nil
     }
 
     @objc private func refreshApps() {

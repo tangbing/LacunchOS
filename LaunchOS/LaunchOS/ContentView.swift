@@ -9,6 +9,7 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
     @FocusState private var isSearchFocused: Bool
     @State private var pagingDragOffset: CGFloat = 0
+    @State private var lastInteractiveGridTapDate = Date.distantPast
 
     var body: some View {
         GeometryReader { geometry in
@@ -76,6 +77,12 @@ struct ContentView: View {
                     )
                     .transition(reduceMotion ? .opacity : .scale(scale: 0.96).combined(with: .opacity))
                 }
+            }
+            .background {
+                BlankClickDismissMonitorView(
+                    isEnabled: model.openedFolderID == nil,
+                    onBlankClick: dismissLauncherFromBlankTap
+                )
             }
             .animation(reduceMotion ? nil : .smooth(duration: 0.2), value: model.currentPage)
             .animation(reduceMotion ? nil : .smooth(duration: 0.2), value: model.openedFolderID)
@@ -331,6 +338,11 @@ struct ContentView: View {
         .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: VisualStyle.searchRadius, style: .continuous))
         .launchOSGlassSurface(cornerRadius: VisualStyle.searchRadius, isInteractive: true, strokeOpacity: 0.28)
         .shadow(color: Color(red: 0.05, green: 0.18, blue: 0.27).opacity(0.18), radius: 20, y: 10)
+        .simultaneousGesture(
+            TapGesture().onEnded {
+                noteInteractiveGridTap()
+            }
+        )
     }
 
     @ViewBuilder
@@ -339,14 +351,15 @@ struct ContentView: View {
             ZStack {
                 Color.clear
                     .contentShape(Rectangle())
-                    .onTapGesture {
-                        LauncherWindowController.hideLauncher()
-                    }
 
                 ScrollView(.vertical) {
                     gridContent(items: model.visibleItems, metrics: metrics)
                 }
                 .scrollIndicators(.visible)
+            }
+            .contentShape(Rectangle())
+            .onTapGesture {
+                dismissLauncherFromBlankTap()
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         } else {
@@ -357,9 +370,6 @@ struct ContentView: View {
                 ZStack(alignment: .top) {
                     Color.clear
                         .contentShape(Rectangle())
-                        .onTapGesture {
-                            LauncherWindowController.hideLauncher()
-                        }
 
                     HStack(alignment: .top, spacing: 0) {
                         ForEach(0..<model.pageCount, id: \.self) { page in
@@ -378,6 +388,10 @@ struct ContentView: View {
                     .animation(pageTurnAnimation, value: model.currentPage)
                 }
                 .clipped()
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    dismissLauncherFromBlankTap()
+                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
@@ -479,6 +493,7 @@ struct ContentView: View {
                     isFolderDropTarget: model.folderDropTargetID == item.id,
                     iconRefreshToken: model.iconRefreshToken
                 ) {
+                    noteInteractiveGridTap()
                     model.launch(app)
                 }
                 .onDrag {
@@ -506,6 +521,7 @@ struct ContentView: View {
                     canReorder: model.canReorderApps,
                     iconRefreshToken: model.iconRefreshToken
                 ) {
+                    noteInteractiveGridTap()
                     model.openFolder(folder.id)
                 }
                 .onDrop(
@@ -615,7 +631,7 @@ struct ContentView: View {
 
                 let velocityWeightedWidth = value.translation.width
                     + (value.predictedEndTranslation.width - value.translation.width) * 0.28
-                let turnThreshold: CGFloat = 120
+                let turnThreshold: CGFloat = 84
 
                 withAnimation(pageTurnAnimation) {
                     if velocityWeightedWidth <= -turnThreshold, model.currentPage < model.pageCount - 1 {
@@ -630,7 +646,7 @@ struct ContentView: View {
     }
 
     private func isHorizontalSwipe(_ translation: CGSize) -> Bool {
-        abs(translation.width) > abs(translation.height) * 1.2
+        abs(translation.width) > abs(translation.height) * 0.85
     }
 
     private func turnPage(_ direction: PagingDirection) {
@@ -647,6 +663,22 @@ struct ContentView: View {
             withAnimation(pageTurnAnimation) {
                 model.previousPage()
             }
+        }
+    }
+
+    private func noteInteractiveGridTap() {
+        lastInteractiveGridTapDate = Date()
+    }
+
+    private func dismissLauncherFromBlankTap() {
+        let tapDate = Date()
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) {
+            guard tapDate.timeIntervalSince(lastInteractiveGridTapDate) > 0.12 else {
+                return
+            }
+
+            LauncherWindowController.hideLauncher()
         }
     }
 
@@ -784,6 +816,110 @@ private enum PagingDirection {
     case next
 }
 
+private struct BlankClickDismissMonitorView: NSViewRepresentable {
+    let isEnabled: Bool
+    let onBlankClick: () -> Void
+
+    func makeNSView(context: Context) -> BlankClickDismissNSView {
+        let view = BlankClickDismissNSView()
+        view.isEnabled = isEnabled
+        view.onBlankClick = onBlankClick
+        return view
+    }
+
+    func updateNSView(_ nsView: BlankClickDismissNSView, context: Context) {
+        nsView.isEnabled = isEnabled
+        nsView.onBlankClick = onBlankClick
+    }
+}
+
+private final class BlankClickDismissNSView: NSView {
+    var isEnabled = false
+    var onBlankClick: (() -> Void)?
+
+    private var mouseMonitor: Any?
+    private var mouseDownLocation: CGPoint?
+    private var didDrag = false
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+
+        if window == nil {
+            removeMouseMonitor()
+        } else {
+            installMouseMonitorIfNeeded()
+        }
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
+    }
+
+    deinit {
+        removeMouseMonitor()
+    }
+
+    private func installMouseMonitorIfNeeded() {
+        guard mouseMonitor == nil else {
+            return
+        }
+
+        mouseMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp]) { [weak self] event in
+            guard
+                let self,
+                self.isEnabled,
+                let window = self.window,
+                event.window === window
+            else {
+                return event
+            }
+
+            self.handleMouseEvent(event)
+            return event
+        }
+    }
+
+    private func handleMouseEvent(_ event: NSEvent) {
+        switch event.type {
+        case .leftMouseDown:
+            mouseDownLocation = event.locationInWindow
+            didDrag = false
+        case .leftMouseDragged:
+            guard let mouseDownLocation else {
+                return
+            }
+
+            let deltaX = event.locationInWindow.x - mouseDownLocation.x
+            let deltaY = event.locationInWindow.y - mouseDownLocation.y
+            if hypot(deltaX, deltaY) > 6 {
+                didDrag = true
+            }
+        case .leftMouseUp:
+            guard mouseDownLocation != nil, !didDrag else {
+                mouseDownLocation = nil
+                didDrag = false
+                return
+            }
+
+            mouseDownLocation = nil
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.04) { [weak self] in
+                self?.onBlankClick?()
+            }
+        default:
+            break
+        }
+    }
+
+    private func removeMouseMonitor() {
+        guard let mouseMonitor else {
+            return
+        }
+
+        NSEvent.removeMonitor(mouseMonitor)
+        self.mouseMonitor = nil
+    }
+}
+
 private struct ScrollWheelPagingView: NSViewRepresentable {
     let isEnabled: Bool
     let onLiveOffsetChange: (CGFloat) -> Void
@@ -822,11 +958,11 @@ private final class ScrollWheelPagingNSView: NSView {
     private var lastDiscretePageDate = Date.distantPast
     private var phaseLessResetWorkItem: DispatchWorkItem?
 
-    private let precisePagingThreshold: CGFloat = 72
-    private let liveOffsetMultiplier: CGFloat = 1.65
-    private let discretePagingThreshold: CGFloat = 8
-    private let discretePagingCooldown: TimeInterval = 0.7
-    private let phaseLessGestureResetDelay: TimeInterval = 0.28
+    private let precisePagingThreshold: CGFloat = 42
+    private let liveOffsetMultiplier: CGFloat = 2.15
+    private let discretePagingThreshold: CGFloat = 6
+    private let discretePagingCooldown: TimeInterval = 0.52
+    private let phaseLessGestureResetDelay: TimeInterval = 0.22
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
@@ -851,7 +987,7 @@ private final class ScrollWheelPagingNSView: NSView {
             return
         }
 
-        scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+        scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel, .swipe]) { [weak self] event in
             guard
                 let self,
                 self.isEnabled,
@@ -862,7 +998,14 @@ private final class ScrollWheelPagingNSView: NSView {
                 return event
             }
 
-            return self.handleScroll(event) ? nil : event
+            switch event.type {
+            case .scrollWheel:
+                return self.handleScroll(event) ? nil : event
+            case .swipe:
+                return self.handleSwipe(event) ? nil : event
+            default:
+                return event
+            }
         }
     }
 
@@ -892,11 +1035,34 @@ private final class ScrollWheelPagingNSView: NSView {
         let horizontalIntent = event.scrollingDeltaX
         let verticalIntent = abs(event.scrollingDeltaY)
 
-        guard abs(horizontalIntent) >= max(6, verticalIntent * 1.15) else {
+        guard abs(horizontalIntent) >= max(3, verticalIntent * 0.82) else {
             return nil
         }
 
         return horizontalIntent
+    }
+
+    private func handleSwipe(_ event: NSEvent) -> Bool {
+        let horizontalIntent = event.deltaX
+        let verticalIntent = abs(event.deltaY)
+
+        guard abs(horizontalIntent) >= max(0.18, verticalIntent * 0.82) else {
+            return false
+        }
+
+        let now = Date()
+        guard now.timeIntervalSince(lastDiscretePageDate) >= discretePagingCooldown else {
+            return true
+        }
+
+        finishPreciseGesture(shouldCommit: false)
+        lastDiscretePageDate = now
+
+        let direction: PagingDirection = horizontalIntent < 0 ? .next : .previous
+        let previewOffset = direction == .next ? -precisePagingThreshold * liveOffsetMultiplier : precisePagingThreshold * liveOffsetMultiplier
+        onLiveOffsetChange?(previewOffset)
+        onLiveOffsetEnd?(direction)
+        return true
     }
 
     private func handleDiscreteScroll(_ pagingIntent: CGFloat) {

@@ -3,6 +3,8 @@ import SwiftUI
 
 @main
 struct LaunchOSApp: App {
+    @NSApplicationDelegateAdaptor(LaunchOSAppDelegate.self) private var appDelegate
+
     @State private var launcherModel = LauncherModel()
     @State private var settingsStore = SettingsStore()
     @State private var hotkeyService = HotkeyService()
@@ -82,5 +84,12 @@ struct LaunchOSApp: App {
         if let icon = NSImage(named: "LaunchOSAboutIcon") {
             NSApp.applicationIconImage = icon
         }
+    }
+}
+
+final class LaunchOSAppDelegate: NSObject, NSApplicationDelegate {
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        LauncherWindowController.showLauncher()
+        return false
     }
 }
