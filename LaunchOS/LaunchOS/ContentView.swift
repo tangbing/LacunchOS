@@ -421,6 +421,7 @@ struct ContentView: View {
         .padding(.vertical, metrics.verticalSpacing)
         .frame(width: metrics.availableWidth, alignment: .top)
         .onDrop(of: [UTType.plainText], delegate: AppGridDropDelegate(model: model))
+        .animation(reduceMotion ? nil : .snappy(duration: 0.22), value: items.map(\.id))
     }
 
     private func items(forPage page: Int) -> [LauncherItem] {
@@ -480,6 +481,56 @@ struct ContentView: View {
         reduceMotion ? nil : .interpolatingSpring(mass: 0.9, stiffness: 230, damping: 31, initialVelocity: 0.22)
     }
 
+    private func updateManualDragTarget(_ item: LauncherItem, location: CGPoint) {
+        guard model.canReorderApps, model.draggingAppID != nil else {
+            return
+        }
+
+        if model.draggingSourceFolderID != nil {
+            withAnimation(.snappy(duration: 0.24)) {
+                model.moveDraggingFolderAppToTopLevel(over: item.id)
+            }
+            return
+        }
+
+        if manualFolderHotZone.contains(location), model.canGroupDraggingApp(with: item) {
+            model.previewFolderDrop(on: item.id)
+        } else {
+            model.clearFolderDropTarget(for: item.id)
+            withAnimation(.snappy(duration: 0.16)) {
+                model.moveDraggingApp(over: item.id)
+            }
+        }
+    }
+
+    private func performManualDragDrop(on item: LauncherItem, location: CGPoint) {
+        guard model.canReorderApps else {
+            model.finishDragging(saveChanges: false)
+            return
+        }
+
+        if model.draggingSourceFolderID != nil {
+            withAnimation(.snappy(duration: 0.22)) {
+                model.moveDraggingFolderAppToTopLevel(over: item.id)
+            }
+            model.finishDragging()
+            return
+        }
+
+        if (model.folderDropTargetID == item.id || manualFolderHotZone.contains(location)),
+           model.canGroupDraggingApp(with: item) {
+            withAnimation(.snappy(duration: 0.18)) {
+                model.groupDraggingApp(with: item)
+            }
+        }
+
+        model.finishDragging()
+    }
+
+    private var manualFolderHotZone: CGRect {
+        CGRect(x: 12, y: 20, width: 132, height: 132)
+    }
+
     @ViewBuilder
     private func gridItem(for item: LauncherItem) -> some View {
         switch item.kind {
@@ -496,9 +547,24 @@ struct ContentView: View {
                     noteInteractiveGridTap()
                     model.launch(app)
                 }
-                .onDrag {
-                    model.beginDragging(app.id)
-                    return NSItemProvider(object: app.id as NSString)
+                .overlay {
+                    NativeAppDragSourceView(
+                        appID: app.id,
+                        icon: AppIconCache.icon(for: app.path),
+                        isEnabled: model.canReorderApps
+                    ) {
+                        model.beginDragging(app.id)
+                    } finishDragging: {
+                        model.finishDragging()
+                    } launch: {
+                        noteInteractiveGridTap()
+                        model.launch(app)
+                    } hoverDragging: { location in
+                        updateManualDragTarget(item, location: location)
+                    } performDraggingDrop: { location in
+                        performManualDragDrop(on: item, location: location)
+                    }
+                    .frame(width: 156, height: 172)
                 }
                 .onDrop(
                     of: [UTType.plainText],

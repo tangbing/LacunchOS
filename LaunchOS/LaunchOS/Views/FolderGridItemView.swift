@@ -25,9 +25,9 @@ struct FolderGridItemView: View {
             .frame(width: 156, height: 172)
             .contentShape(RoundedRectangle(cornerRadius: VisualStyle.tileRadius, style: .continuous))
             .background {
-                if isSelected {
+                if isDropTarget {
                     RoundedRectangle(cornerRadius: VisualStyle.tileRadius, style: .continuous)
-                        .fill(.white.opacity(0.13))
+                        .fill(Color.accentColor.opacity(0.18))
                         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: VisualStyle.tileRadius, style: .continuous))
                 }
             }

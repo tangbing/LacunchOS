@@ -17,6 +17,7 @@ final class LauncherModel {
     var columnCount = 1
     var layoutSettings = LayoutSettings()
     var draggingAppID: AppRecord.ID?
+    var draggingSourceFolderID: LauncherFolder.ID?
     var folderDropTargetID: LauncherItem.ID?
     var openedFolderID: LauncherFolder.ID?
     var folderRenameRequest: FolderRenameRequest?
@@ -29,6 +30,8 @@ final class LauncherModel {
     @ObservationIgnored private let searchService: SearchService
     @ObservationIgnored private let layoutStore: LayoutStore
     @ObservationIgnored private var hasLoadedLayout = false
+    @ObservationIgnored private var folderDropPreviewTask: Task<Void, Never>?
+    @ObservationIgnored private var pendingFolderDropTargetID: LauncherItem.ID?
 
     init() {
         scanner = AppScanner()
@@ -373,37 +376,147 @@ final class LauncherModel {
     func beginDragging(_ appID: AppRecord.ID) {
         guard canReorderApps, topLevelAppIDs().contains(appID) else {
             draggingAppID = nil
+            draggingSourceFolderID = nil
             return
         }
 
         draggingAppID = appID
+        draggingSourceFolderID = nil
+        selectedItemID = appID
+    }
+
+    func beginDraggingFolderApp(_ appID: AppRecord.ID, in folderID: LauncherFolder.ID) {
+        guard
+            canReorderApps,
+            let folder = folders.first(where: { $0.id == folderID }),
+            folder.appIDs.contains(appID)
+        else {
+            draggingAppID = nil
+            draggingSourceFolderID = nil
+            return
+        }
+
+        draggingAppID = appID
+        draggingSourceFolderID = folderID
         selectedItemID = appID
     }
 
     func moveDraggingApp(over targetItemID: LauncherItem.ID) {
-        guard canReorderApps, let draggingAppID, draggingAppID != targetItemID else {
+        guard canReorderApps, draggingSourceFolderID == nil, let draggingAppID, draggingAppID != targetItemID else {
             return
         }
 
-        folderDropTargetID = nil
+        clearFolderDropTarget()
         moveTopLevelItem(draggingAppID, over: targetItemID)
     }
 
-    func previewFolderDrop(on targetItemID: LauncherItem.ID) {
-        guard canReorderApps, draggingAppID != nil else {
-            folderDropTargetID = nil
+    func moveDraggingFolderApp(over targetAppID: AppRecord.ID, in folderID: LauncherFolder.ID) {
+        guard
+            canReorderApps,
+            draggingSourceFolderID == folderID,
+            let draggingAppID,
+            draggingAppID != targetAppID,
+            let folderIndex = folders.firstIndex(where: { $0.id == folderID }),
+            let sourceIndex = folders[folderIndex].appIDs.firstIndex(of: draggingAppID),
+            let targetIndex = folders[folderIndex].appIDs.firstIndex(of: targetAppID)
+        else {
             return
         }
 
-        folderDropTargetID = targetItemID
+        let movedAppID = folders[folderIndex].appIDs.remove(at: sourceIndex)
+        folders[folderIndex].appIDs.insert(movedAppID, at: min(targetIndex, folders[folderIndex].appIDs.count))
+        folders[folderIndex].updatedAt = Date()
+        selectedItemID = movedAppID
     }
 
-    func clearFolderDropTarget() {
-        folderDropTargetID = nil
+    func moveDraggingFolderAppToTopLevel(over targetItemID: LauncherItem.ID? = nil) {
+        guard
+            canReorderApps,
+            let draggingAppID,
+            let sourceFolderID = draggingSourceFolderID,
+            apps.contains(where: { $0.id == draggingAppID && !$0.isHidden }),
+            let folderIndex = folders.firstIndex(where: { $0.id == sourceFolderID }),
+            folders[folderIndex].appIDs.contains(draggingAppID)
+        else {
+            return
+        }
+
+        let previousTopLevelItemIDs = normalizedTopLevelItemIDs()
+        let fallbackIndex = previousTopLevelItemIDs.firstIndex(of: sourceFolderID)
+            .map { $0 + 1 }
+            ?? previousTopLevelItemIDs.count
+
+        folders[folderIndex].appIDs.removeAll { $0 == draggingAppID }
+        folders[folderIndex].updatedAt = Date()
+
+        var itemIDs = previousTopLevelItemIDs.filter { $0 != draggingAppID }
+        let insertionIndex = targetItemID
+            .flatMap { itemIDs.firstIndex(of: $0) }
+            ?? min(fallbackIndex, itemIDs.count)
+
+        itemIDs.insert(draggingAppID, at: min(insertionIndex, itemIDs.count))
+        orderedItemIDs = itemIDs
+        draggingSourceFolderID = nil
+        openedFolderID = nil
+
+        dissolveFolderIfNeeded(sourceFolderID)
+        selectVisibleItem(draggingAppID)
+    }
+
+    func previewFolderDrop(on targetItemID: LauncherItem.ID) {
+        guard canReorderApps, draggingSourceFolderID == nil, draggingAppID != nil else {
+            clearFolderDropTarget()
+            return
+        }
+
+        guard folderDropTargetID != targetItemID, pendingFolderDropTargetID != targetItemID else {
+            return
+        }
+
+        pendingFolderDropTargetID = targetItemID
+        folderDropPreviewTask?.cancel()
+        folderDropPreviewTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 240_000_000)
+
+            guard !Task.isCancelled else {
+                return
+            }
+
+            await MainActor.run {
+                guard
+                    let self,
+                    self.canReorderApps,
+                    self.draggingAppID != nil,
+                    self.pendingFolderDropTargetID == targetItemID
+                else {
+                    return
+                }
+
+                self.folderDropTargetID = targetItemID
+            }
+        }
+    }
+
+    func clearFolderDropTarget(for targetItemID: LauncherItem.ID? = nil) {
+        guard
+            targetItemID == nil
+                || pendingFolderDropTargetID == targetItemID
+                || folderDropTargetID == targetItemID
+        else {
+            return
+        }
+
+        folderDropPreviewTask?.cancel()
+        folderDropPreviewTask = nil
+        pendingFolderDropTargetID = nil
+
+        if targetItemID == nil || folderDropTargetID == targetItemID {
+            folderDropTargetID = nil
+        }
     }
 
     func canGroupDraggingApp(with targetItem: LauncherItem) -> Bool {
-        guard canReorderApps, let draggingAppID, draggingAppID != targetItem.id else {
+        guard canReorderApps, draggingSourceFolderID == nil, let draggingAppID, draggingAppID != targetItem.id else {
             return false
         }
 
@@ -419,6 +532,8 @@ final class LauncherModel {
         guard canGroupDraggingApp(with: targetItem), let draggingAppID else {
             return
         }
+
+        clearFolderDropTarget()
 
         switch targetItem.kind {
         case .app:
@@ -436,14 +551,35 @@ final class LauncherModel {
         }
     }
 
+    func moveDraggingAppToEnd() {
+        guard canReorderApps, draggingSourceFolderID == nil, let draggingAppID else {
+            return
+        }
+
+        clearFolderDropTarget()
+
+        var itemIDs = normalizedTopLevelItemIDs()
+
+        guard itemIDs.contains(draggingAppID) else {
+            return
+        }
+
+        itemIDs.removeAll { $0 == draggingAppID }
+        itemIDs.append(draggingAppID)
+        orderedItemIDs = itemIDs
+        selectVisibleItem(draggingAppID)
+    }
+
     func finishDragging(saveChanges: Bool = true) {
         guard draggingAppID != nil else {
-            folderDropTargetID = nil
+            draggingSourceFolderID = nil
+            clearFolderDropTarget()
             return
         }
 
         draggingAppID = nil
-        folderDropTargetID = nil
+        draggingSourceFolderID = nil
+        clearFolderDropTarget()
 
         if saveChanges {
             saveCurrentLayout()
@@ -676,9 +812,18 @@ final class LauncherModel {
 
     private func createFolder(draggingAppID: AppRecord.ID, targetAppID: AppRecord.ID) {
         var itemIDs = normalizedTopLevelItemIDs()
+        var folderAppIDs: [AppRecord.ID] = []
+
+        for appID in [targetAppID, draggingAppID] where !folderAppIDs.contains(appID) {
+            guard apps.contains(where: { $0.id == appID && !$0.isHidden }) else {
+                continue
+            }
+
+            folderAppIDs.append(appID)
+        }
 
         guard
-            draggingAppID != targetAppID,
+            folderAppIDs.count > 1,
             itemIDs.contains(draggingAppID),
             let targetIndex = itemIDs.firstIndex(of: targetAppID)
         else {
@@ -688,7 +833,7 @@ final class LauncherModel {
         let insertionIndex = itemIDs[..<targetIndex]
             .filter { $0 != draggingAppID && $0 != targetAppID }
             .count
-        let folder = LauncherFolder(name: nextFolderName(), appIDs: [targetAppID, draggingAppID])
+        let folder = LauncherFolder(name: nextFolderName(), appIDs: folderAppIDs)
 
         itemIDs.removeAll { $0 == draggingAppID || $0 == targetAppID }
         itemIDs.insert(folder.id, at: min(insertionIndex, itemIDs.count))

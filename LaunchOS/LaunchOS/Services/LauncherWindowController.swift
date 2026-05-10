@@ -4,6 +4,7 @@ enum LauncherWindowController {
     private static weak var launcherWindow: NSWindow?
     private static var displayStrategy = LauncherDisplayStrategy.pointer
     private static var isFullScreenModeEnabled = false
+    private static var previousPresentationOptions: NSApplication.PresentationOptions?
 
     static func updateDisplayStrategy(_ strategy: LauncherDisplayStrategy) {
         displayStrategy = strategy
@@ -24,6 +25,7 @@ enum LauncherWindowController {
 
         if let window = launcherWindow ?? NSApp.windows.first(where: { $0.canBecomeKey }) {
             configure(window, on: screen)
+            applyLauncherPresentationOptions()
             window.makeKeyAndOrderFront(nil)
         }
     }
@@ -34,6 +36,8 @@ enum LauncherWindowController {
         } else {
             NSApp.keyWindow?.orderOut(nil)
         }
+
+        restorePresentationOptions()
     }
 
     static func toggleLauncher(on screen: NSScreen? = nil) {
@@ -54,7 +58,7 @@ enum LauncherWindowController {
         window.isOpaque = false
         window.backgroundColor = .clear
         window.hasShadow = false
-        window.level = .floating
+        window.level = .screenSaver
         window.collectionBehavior = [
             .canJoinAllSpaces,
             .fullScreenAuxiliary,
@@ -74,5 +78,25 @@ enum LauncherWindowController {
         if let screen = screen ?? DisplayService.targetScreen(for: displayStrategy) ?? window.screen {
             window.setFrame(screen.frame, display: true)
         }
+    }
+
+    private static func applyLauncherPresentationOptions() {
+        if previousPresentationOptions == nil {
+            previousPresentationOptions = NSApp.presentationOptions
+        }
+
+        NSApp.presentationOptions = [
+            .hideDock,
+            .hideMenuBar
+        ]
+    }
+
+    private static func restorePresentationOptions() {
+        guard let previousPresentationOptions else {
+            return
+        }
+
+        NSApp.presentationOptions = previousPresentationOptions
+        self.previousPresentationOptions = nil
     }
 }

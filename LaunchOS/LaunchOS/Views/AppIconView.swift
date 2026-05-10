@@ -12,7 +12,11 @@ struct AppIconView: View {
             .scaledToFit()
             .frame(width: size, height: size)
             .shadow(color: .black.opacity(0.18), radius: size / 8, y: size / 16)
-            .id(refreshToken)
+            .id(imageIdentity)
             .accessibilityHidden(true)
+    }
+
+    private var imageIdentity: String {
+        "\(app.id)-\(refreshToken?.uuidString ?? "stable")"
     }
 }
