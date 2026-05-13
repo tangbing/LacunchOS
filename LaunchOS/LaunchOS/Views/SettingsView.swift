@@ -206,10 +206,17 @@ struct SettingsView: View {
 
                     SettingsDivider()
 
-                    SettingsRow(title: "模糊壁纸") {
-                        Toggle("", isOn: $settingsStore.settings.isWallpaperBlurred)
-                            .labelsHidden()
-                            .toggleStyle(.switch)
+                    if settingsStore.settings.backgroundStyle == .systemWallpaper {
+                        SettingsRow(title: "模糊壁纸") {
+                            Toggle("", isOn: $settingsStore.settings.isWallpaperBlurred)
+                                .labelsHidden()
+                                .toggleStyle(.switch)
+                        }
+                    } else {
+                        SettingsRow(title: "玻璃材质") {
+                            GlassMaterialStrengthSlider(value: glassMaterialStrengthBinding)
+                                .frame(width: 360, height: 36)
+                        }
                     }
                 }
             }
@@ -420,6 +427,14 @@ struct SettingsView: View {
             launcherModel.layoutSettings.customRowCount
         } set: { rowCount in
             launcherModel.updateCustomRowCount(rowCount)
+        }
+    }
+
+    private var glassMaterialStrengthBinding: Binding<Double> {
+        Binding {
+            settingsStore.settings.glassMaterialStrength
+        } set: { strength in
+            settingsStore.settings.glassMaterialStrength = min(1, max(0, strength))
         }
     }
 
@@ -677,6 +692,68 @@ private struct StatusBadge: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 4)
             .background(Color.secondary.opacity(0.12), in: Capsule())
+    }
+}
+
+private struct GlassMaterialStrengthSlider: View {
+    @Binding var value: Double
+    @State private var isDragging = false
+
+    var body: some View {
+        GeometryReader { proxy in
+            let width = max(1, proxy.size.width)
+            let progress = min(1, max(0, value))
+
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(Color.secondary.opacity(0.16))
+                    .frame(height: 8)
+
+                Capsule()
+                    .fill(Color.accentColor.opacity(0.88))
+                    .frame(width: width * progress, height: 8)
+
+                HStack {
+                    ForEach(0..<5, id: \.self) { index in
+                        Circle()
+                            .fill(Color.white.opacity(0.74))
+                            .frame(width: 4, height: 4)
+
+                        if index < 4 {
+                            Spacer()
+                        }
+                    }
+                }
+                .padding(.horizontal, 18)
+                .allowsHitTesting(false)
+
+                Circle()
+                    .fill(.white)
+                    .frame(width: isDragging ? 32 : 28, height: isDragging ? 32 : 28)
+                    .shadow(color: .black.opacity(0.16), radius: 10, y: 4)
+                    .overlay {
+                        Circle()
+                            .stroke(Color.black.opacity(0.06), lineWidth: 1)
+                    }
+                    .offset(x: max(0, min(width - 28, width * progress - 14)))
+                    .animation(.interactiveSpring(response: 0.22, dampingFraction: 0.82), value: isDragging)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { gesture in
+                        isDragging = true
+                        value = min(1, max(0, gesture.location.x / width))
+                    }
+                    .onEnded { gesture in
+                        value = min(1, max(0, gesture.location.x / width))
+                        isDragging = false
+                    }
+            )
+        }
+        .accessibilityLabel("玻璃材质")
+        .accessibilityValue("\(Int(value * 100))%")
     }
 }
 

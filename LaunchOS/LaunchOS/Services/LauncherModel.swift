@@ -1,6 +1,12 @@
 import AppKit
 import Observation
 
+struct AppDragPreviewState: Equatable {
+    let appID: AppRecord.ID
+    var locationInWindow: CGPoint
+    var cursorOffsetFromCenter: CGSize
+}
+
 @MainActor
 @Observable
 final class LauncherModel {
@@ -18,6 +24,7 @@ final class LauncherModel {
     var layoutSettings = LayoutSettings()
     var draggingAppID: AppRecord.ID?
     var draggingSourceFolderID: LauncherFolder.ID?
+    var dragPreviewState: AppDragPreviewState?
     var folderDropTargetID: LauncherItem.ID?
     var openedFolderID: LauncherFolder.ID?
     var folderRenameRequest: FolderRenameRequest?
@@ -42,6 +49,14 @@ final class LauncherModel {
 
     var visibleApps: [AppRecord] {
         searchService.results(for: searchText, in: apps.filter { !$0.isHidden })
+    }
+
+    var draggingApp: AppRecord? {
+        guard let draggingAppID else {
+            return nil
+        }
+
+        return apps.first { $0.id == draggingAppID }
     }
 
     var visibleItems: [LauncherItem] {
@@ -377,6 +392,7 @@ final class LauncherModel {
         guard canReorderApps, topLevelAppIDs().contains(appID) else {
             draggingAppID = nil
             draggingSourceFolderID = nil
+            dragPreviewState = nil
             return
         }
 
@@ -393,12 +409,29 @@ final class LauncherModel {
         else {
             draggingAppID = nil
             draggingSourceFolderID = nil
+            dragPreviewState = nil
             return
         }
 
         draggingAppID = appID
         draggingSourceFolderID = folderID
         selectedItemID = appID
+    }
+
+    func updateDragPreview(
+        appID: AppRecord.ID,
+        locationInWindow: CGPoint,
+        cursorOffsetFromCenter: CGSize
+    ) {
+        guard draggingAppID == appID else {
+            return
+        }
+
+        dragPreviewState = AppDragPreviewState(
+            appID: appID,
+            locationInWindow: locationInWindow,
+            cursorOffsetFromCenter: cursorOffsetFromCenter
+        )
     }
 
     func moveDraggingApp(over targetItemID: LauncherItem.ID) {
@@ -463,9 +496,17 @@ final class LauncherModel {
         selectVisibleItem(draggingAppID)
     }
 
-    func previewFolderDrop(on targetItemID: LauncherItem.ID) {
+    func previewFolderDrop(on targetItemID: LauncherItem.ID, activatesImmediately: Bool = false) {
         guard canReorderApps, draggingSourceFolderID == nil, draggingAppID != nil else {
             clearFolderDropTarget()
+            return
+        }
+
+        if activatesImmediately {
+            folderDropPreviewTask?.cancel()
+            folderDropPreviewTask = nil
+            pendingFolderDropTargetID = nil
+            folderDropTargetID = targetItemID
             return
         }
 
@@ -573,12 +614,14 @@ final class LauncherModel {
     func finishDragging(saveChanges: Bool = true) {
         guard draggingAppID != nil else {
             draggingSourceFolderID = nil
+            dragPreviewState = nil
             clearFolderDropTarget()
             return
         }
 
         draggingAppID = nil
         draggingSourceFolderID = nil
+        dragPreviewState = nil
         clearFolderDropTarget()
 
         if saveChanges {

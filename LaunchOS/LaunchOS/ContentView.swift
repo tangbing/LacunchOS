@@ -10,6 +10,7 @@ struct ContentView: View {
     @FocusState private var isSearchFocused: Bool
     @State private var pagingDragOffset: CGFloat = 0
     @State private var lastInteractiveGridTapDate = Date.distantPast
+    @State private var desktopWallpaperImage: NSImage?
 
     var body: some View {
         GeometryReader { geometry in
@@ -77,16 +78,37 @@ struct ContentView: View {
                     )
                     .transition(reduceMotion ? .opacity : .scale(scale: 0.96).combined(with: .opacity))
                 }
+
+                if let dragPreviewState = model.dragPreviewState,
+                   let draggingApp = model.draggingApp {
+                    dragPreview(
+                        for: draggingApp,
+                        state: dragPreviewState,
+                        containerSize: geometry.size
+                    )
+                    .zIndex(40)
+                }
             }
             .background {
-                BlankClickDismissMonitorView(
-                    isEnabled: model.openedFolderID == nil,
-                    onBlankClick: dismissLauncherFromBlankTap
-                )
+                ZStack {
+                    BlankClickDismissMonitorView(
+                        isEnabled: model.openedFolderID == nil,
+                        onBlankClick: dismissLauncherFromBlankTap
+                    )
+
+                    ScrollWheelPagingView(
+                        isEnabled: canUseGesturePaging,
+                        onLiveOffsetChange: updateScrollPagingOffset(_:),
+                        onLiveOffsetEnd: finishScrollPaging(_:),
+                        onPage: turnPage(_:)
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
             }
             .animation(reduceMotion ? nil : .smooth(duration: 0.2), value: model.currentPage)
             .animation(reduceMotion ? nil : .smooth(duration: 0.2), value: model.openedFolderID)
             .onAppear {
+                refreshDesktopWallpaperImage()
                 model.updateGrid(columns: metrics.columns, itemsPerPage: metrics.itemsPerPage)
                 isSearchFocused = true
             }
@@ -104,6 +126,9 @@ struct ContentView: View {
         }
         .onChange(of: model.searchText) {
             model.resetPagingForSearch()
+        }
+        .onChange(of: settingsStore.settings.backgroundStyle) {
+            refreshDesktopWallpaperImage()
         }
         .onExitCommand {
             if model.openedFolderID != nil {
@@ -180,36 +205,63 @@ struct ContentView: View {
     @ViewBuilder
     private var launcherBackdrop: some View {
         ZStack {
-            wallpaperColorField
-
             switch settingsStore.settings.backgroundStyle {
             case .systemWallpaper:
+                desktopWallpaperLayer
+                    .blur(radius: settingsStore.settings.isWallpaperBlurred ? 30 : 0)
+                    .scaleEffect(settingsStore.settings.isWallpaperBlurred ? 1.06 : 1)
+
                 if settingsStore.settings.isWallpaperBlurred {
                     Rectangle()
                         .fill(.ultraThinMaterial)
-                } else {
-                    Rectangle()
-                        .fill(.clear)
                 }
 
                 Rectangle()
                     .fill(systemWallpaperTint)
             case .frostedGlass:
-                if settingsStore.settings.isWallpaperBlurred {
-                    Rectangle()
-                        .fill(.regularMaterial)
-                } else {
-                    Rectangle()
-                        .fill(.thinMaterial)
-                }
+                desktopWallpaperLayer
+                    .blur(radius: frostedGlassBlurRadius)
+                    .scaleEffect(frostedGlassWallpaperScale)
+                    .saturation(frostedGlassSaturation)
+                    .brightness(frostedGlassBrightness)
+                    .contrast(frostedGlassContrast)
+
+                Rectangle()
+                    .fill(frostedGlassWash)
 
                 Rectangle()
                     .fill(frostedGlassTint)
+
+                LinearGradient(
+                    colors: [
+                        Color.white.opacity(frostedGlassHighlightOpacity),
+                        Color.white.opacity(frostedGlassBottomHighlightOpacity)
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
             }
         }
         .ignoresSafeArea()
         .animation(reduceMotion ? nil : .smooth(duration: 0.18), value: settingsStore.settings.backgroundStyle)
         .animation(reduceMotion ? nil : .smooth(duration: 0.18), value: settingsStore.settings.isWallpaperBlurred)
+        .animation(reduceMotion ? nil : .smooth(duration: 0.18), value: settingsStore.settings.glassMaterialStrength)
+    }
+
+    @ViewBuilder
+    private var desktopWallpaperLayer: some View {
+        GeometryReader { geometry in
+            if let desktopWallpaperImage {
+                Image(nsImage: desktopWallpaperImage)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: geometry.size.width, height: geometry.size.height)
+                    .clipped()
+            } else {
+                wallpaperColorField
+                    .frame(width: geometry.size.width, height: geometry.size.height)
+            }
+        }
     }
 
     private var wallpaperColorField: some View {
@@ -250,18 +302,59 @@ struct ContentView: View {
 
     private var systemWallpaperTint: Color {
         if settingsStore.settings.isWallpaperBlurred {
-            return Color.black.opacity(colorScheme == .dark ? 0.18 : 0.05)
+            return Color.black.opacity(colorScheme == .dark ? 0.28 : 0.10)
         }
 
-        return Color.white.opacity(colorScheme == .dark ? 0.03 : 0.09)
+        return Color.black.opacity(colorScheme == .dark ? 0.18 : 0.03)
+    }
+
+    private var frostedGlassBlurRadius: CGFloat {
+        CGFloat(settingsStore.settings.glassMaterialStrength) * 64
+    }
+
+    private var frostedGlassWallpaperScale: CGFloat {
+        1 + CGFloat(settingsStore.settings.glassMaterialStrength) * 0.075
+    }
+
+    private var frostedGlassSaturation: Double {
+        1 - settingsStore.settings.glassMaterialStrength * 0.62
+    }
+
+    private var frostedGlassBrightness: Double {
+        colorScheme == .dark
+            ? -settingsStore.settings.glassMaterialStrength * 0.12
+            : settingsStore.settings.glassMaterialStrength * 0.08
+    }
+
+    private var frostedGlassContrast: Double {
+        1 - settingsStore.settings.glassMaterialStrength * 0.18
+    }
+
+    private var frostedGlassWash: Color {
+        let strength = settingsStore.settings.glassMaterialStrength
+
+        if colorScheme == .dark {
+            return Color.black.opacity(0.02 + strength * 0.36)
+        }
+
+        return Color.white.opacity(0.02 + strength * 0.46)
     }
 
     private var frostedGlassTint: Color {
-        if settingsStore.settings.isWallpaperBlurred {
-            return Color(red: 0.12, green: 0.30, blue: 0.40).opacity(colorScheme == .dark ? 0.34 : 0.16)
-        }
+        let strength = settingsStore.settings.glassMaterialStrength
 
-        return Color(red: 0.32, green: 0.56, blue: 0.66).opacity(colorScheme == .dark ? 0.18 : 0.24)
+        return Color(red: 0.24, green: 0.47, blue: 0.57)
+            .opacity(colorScheme == .dark ? strength * 0.26 : strength * 0.18)
+    }
+
+    private var frostedGlassHighlightOpacity: Double {
+        let strength = settingsStore.settings.glassMaterialStrength
+        return colorScheme == .dark ? strength * 0.08 : strength * 0.22
+    }
+
+    private var frostedGlassBottomHighlightOpacity: Double {
+        let strength = settingsStore.settings.glassMaterialStrength
+        return colorScheme == .dark ? strength * 0.03 : strength * 0.08
     }
 
     private func launcherContent(metrics: GridMetrics) -> some View {
@@ -277,14 +370,6 @@ struct ContentView: View {
             } else {
                 appGrid(metrics: metrics)
                     .simultaneousGesture(pagingDragGesture)
-                    .background {
-                        ScrollWheelPagingView(
-                            isEnabled: canUseGesturePaging,
-                            onLiveOffsetChange: updateScrollPagingOffset(_:),
-                            onLiveOffsetEnd: finishScrollPaging(_:),
-                            onPage: turnPage(_:)
-                        )
-                    }
                     .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.985)))
             }
 
@@ -421,7 +506,35 @@ struct ContentView: View {
         .padding(.vertical, metrics.verticalSpacing)
         .frame(width: metrics.availableWidth, alignment: .top)
         .onDrop(of: [UTType.plainText], delegate: AppGridDropDelegate(model: model))
-        .animation(reduceMotion ? nil : .snappy(duration: 0.22), value: items.map(\.id))
+        .animation(reorderAnimation, value: items.map(\.id))
+    }
+
+    private func dragPreview(
+        for app: AppRecord,
+        state: AppDragPreviewState,
+        containerSize: CGSize
+    ) -> some View {
+        AppDragPreviewView(
+            app: app,
+            iconRefreshToken: model.iconRefreshToken
+        )
+        .position(dragPreviewPosition(for: state, containerSize: containerSize))
+        .allowsHitTesting(false)
+        .transition(reduceMotion ? .opacity : .scale(scale: 0.92).combined(with: .opacity))
+        .accessibilityHidden(true)
+    }
+
+    private func dragPreviewPosition(
+        for state: AppDragPreviewState,
+        containerSize: CGSize
+    ) -> CGPoint {
+        let centerX = state.locationInWindow.x - state.cursorOffsetFromCenter.width
+        let centerYFromBottom = state.locationInWindow.y - state.cursorOffsetFromCenter.height
+
+        return CGPoint(
+            x: centerX,
+            y: containerSize.height - centerYFromBottom
+        )
     }
 
     private func items(forPage page: Int) -> [LauncherItem] {
@@ -481,23 +594,27 @@ struct ContentView: View {
         reduceMotion ? nil : .interpolatingSpring(mass: 0.9, stiffness: 230, damping: 31, initialVelocity: 0.22)
     }
 
+    private var reorderAnimation: Animation? {
+        reduceMotion ? nil : .interactiveSpring(response: 0.34, dampingFraction: 0.82, blendDuration: 0.04)
+    }
+
     private func updateManualDragTarget(_ item: LauncherItem, location: CGPoint) {
         guard model.canReorderApps, model.draggingAppID != nil else {
             return
         }
 
         if model.draggingSourceFolderID != nil {
-            withAnimation(.snappy(duration: 0.24)) {
+            withAnimation(reorderAnimation) {
                 model.moveDraggingFolderAppToTopLevel(over: item.id)
             }
             return
         }
 
-        if manualFolderHotZone.contains(location), model.canGroupDraggingApp(with: item) {
-            model.previewFolderDrop(on: item.id)
+        if isManualFolderDropTarget(item, at: location) {
+            model.previewFolderDrop(on: item.id, activatesImmediately: item.kind == .folder)
         } else {
             model.clearFolderDropTarget(for: item.id)
-            withAnimation(.snappy(duration: 0.16)) {
+            withAnimation(reorderAnimation) {
                 model.moveDraggingApp(over: item.id)
             }
         }
@@ -510,16 +627,16 @@ struct ContentView: View {
         }
 
         if model.draggingSourceFolderID != nil {
-            withAnimation(.snappy(duration: 0.22)) {
+            withAnimation(reorderAnimation) {
                 model.moveDraggingFolderAppToTopLevel(over: item.id)
             }
             model.finishDragging()
             return
         }
 
-        if (model.folderDropTargetID == item.id || manualFolderHotZone.contains(location)),
+        if (model.folderDropTargetID == item.id || isManualFolderDropTarget(item, at: location)),
            model.canGroupDraggingApp(with: item) {
-            withAnimation(.snappy(duration: 0.18)) {
+            withAnimation(reorderAnimation) {
                 model.groupDraggingApp(with: item)
             }
         }
@@ -527,7 +644,24 @@ struct ContentView: View {
         model.finishDragging()
     }
 
-    private var manualFolderHotZone: CGRect {
+    private func isManualFolderDropTarget(_ item: LauncherItem, at location: CGPoint) -> Bool {
+        guard model.canGroupDraggingApp(with: item) else {
+            return false
+        }
+
+        switch item.kind {
+        case .folder:
+            return existingFolderDropHotZone.contains(location)
+        case .app:
+            return newFolderDropHotZone.contains(location)
+        }
+    }
+
+    private var existingFolderDropHotZone: CGRect {
+        CGRect(x: 0, y: 0, width: 156, height: 172)
+    }
+
+    private var newFolderDropHotZone: CGRect {
         CGRect(x: 12, y: 20, width: 132, height: 132)
     }
 
@@ -559,6 +693,12 @@ struct ContentView: View {
                     } launch: {
                         noteInteractiveGridTap()
                         model.launch(app)
+                    } updateDraggingPreview: { locationInWindow, cursorOffsetFromCenter in
+                        model.updateDragPreview(
+                            appID: app.id,
+                            locationInWindow: locationInWindow,
+                            cursorOffsetFromCenter: cursorOffsetFromCenter
+                        )
                     } hoverDragging: { location in
                         updateManualDragTarget(item, location: location)
                     } performDraggingDrop: { location in
@@ -589,6 +729,25 @@ struct ContentView: View {
                 ) {
                     noteInteractiveGridTap()
                     model.openFolder(folder.id)
+                }
+                .overlay {
+                    NativeAppDragSourceView(
+                        appID: folder.id,
+                        icon: NSImage(),
+                        isEnabled: model.canReorderApps
+                            && model.draggingAppID != nil
+                            && model.draggingSourceFolderID == nil
+                    ) {
+                    } finishDragging: {
+                        model.finishDragging()
+                    } launch: {
+                    } updateDraggingPreview: { _, _ in
+                    } hoverDragging: { location in
+                        updateManualDragTarget(item, location: location)
+                    } performDraggingDrop: { location in
+                        performManualDragDrop(on: item, location: location)
+                    }
+                    .frame(width: 156, height: 172)
                 }
                 .onDrop(
                     of: [UTType.plainText],
@@ -732,6 +891,23 @@ struct ContentView: View {
         }
     }
 
+    private func refreshDesktopWallpaperImage() {
+        desktopWallpaperImage = Self.loadDesktopWallpaperImage()
+    }
+
+    private static func loadDesktopWallpaperImage() -> NSImage? {
+        let screen = NSScreen.main ?? NSScreen.screens.first
+
+        guard
+            let screen,
+            let url = NSWorkspace.shared.desktopImageURL(for: screen)
+        else {
+            return nil
+        }
+
+        return NSImage(contentsOf: url)
+    }
+
     private func noteInteractiveGridTap() {
         lastInteractiveGridTapDate = Date()
     }
@@ -860,6 +1036,30 @@ struct ContentView: View {
             horizontalSpacing: horizontalSpacing,
             verticalSpacing: minimumGridSpacing
         )
+    }
+}
+
+private struct AppDragPreviewView: View {
+    let app: AppRecord
+    let iconRefreshToken: UUID
+
+    var body: some View {
+        VStack(spacing: 14) {
+            AppIconView(app: app, size: 118, refreshToken: iconRefreshToken)
+                .scaleEffect(1.08)
+
+            Text(app.alias ?? app.displayName)
+                .font(.system(size: 15, weight: .semibold))
+                .lineLimit(2)
+                .multilineTextAlignment(.center)
+                .foregroundStyle(.white)
+                .shadow(color: .black.opacity(0.52), radius: 5, y: 2)
+                .frame(width: 138, height: 40, alignment: .top)
+        }
+        .frame(width: 168, height: 184)
+        .contentShape(Rectangle())
+        .shadow(color: .black.opacity(0.30), radius: 28, y: 18)
+        .compositingGroup()
     }
 }
 
@@ -1024,11 +1224,15 @@ private final class ScrollWheelPagingNSView: NSView {
     private var lastDiscretePageDate = Date.distantPast
     private var phaseLessResetWorkItem: DispatchWorkItem?
 
-    private let precisePagingThreshold: CGFloat = 42
-    private let liveOffsetMultiplier: CGFloat = 2.15
-    private let discretePagingThreshold: CGFloat = 6
+    private let precisePagingThreshold: CGFloat = 32
+    private let liveOffsetMultiplier: CGFloat = 2.35
+    private let discretePagingThreshold: CGFloat = 4
     private let discretePagingCooldown: TimeInterval = 0.52
-    private let phaseLessGestureResetDelay: TimeInterval = 0.22
+    private let phaseLessGestureResetDelay: TimeInterval = 0.18
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
+    }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
@@ -1081,8 +1285,21 @@ private final class ScrollWheelPagingNSView: NSView {
         }
 
         guard let pagingIntent = pagingIntent(for: event) else {
-            if hasActivePreciseGesture {
-                finishPreciseGesture(shouldCommit: false)
+            if event.hasPreciseScrollingDeltas, hasActivePreciseGesture {
+                if event.phase.contains(.cancelled) {
+                    finishPreciseGesture(shouldCommit: false)
+                    return true
+                }
+
+                if event.phase.contains(.ended) {
+                    finishPreciseGesture(shouldCommit: true)
+                    return true
+                }
+
+                if event.phase.isEmpty {
+                    schedulePhaseLessGestureFinish()
+                    return true
+                }
             }
 
             return false
@@ -1098,10 +1315,12 @@ private final class ScrollWheelPagingNSView: NSView {
     }
 
     private func pagingIntent(for event: NSEvent) -> CGFloat? {
-        let horizontalIntent = event.scrollingDeltaX
-        let verticalIntent = abs(event.scrollingDeltaY)
+        let horizontalIntent = event.scrollingDeltaX == 0 ? event.deltaX : event.scrollingDeltaX
+        let verticalIntent = abs(event.scrollingDeltaY == 0 ? event.deltaY : event.scrollingDeltaY)
+        let minimumIntent: CGFloat = event.hasPreciseScrollingDeltas ? 0.45 : 2
+        let verticalTolerance: CGFloat = event.hasPreciseScrollingDeltas ? 0.48 : 0.72
 
-        guard abs(horizontalIntent) >= max(3, verticalIntent * 0.82) else {
+        guard abs(horizontalIntent) >= max(minimumIntent, verticalIntent * verticalTolerance) else {
             return nil
         }
 
@@ -1146,7 +1365,7 @@ private final class ScrollWheelPagingNSView: NSView {
     }
 
     private func handlePreciseScroll(_ pagingIntent: CGFloat, phase: NSEvent.Phase) {
-        if phase.contains(.began) || phase.contains(.mayBegin) || !hasActivePreciseGesture {
+        if !hasActivePreciseGesture {
             beginPreciseGesture()
         }
 
@@ -1195,6 +1414,10 @@ private final class ScrollWheelPagingNSView: NSView {
             direction = .previous
         } else {
             direction = nil
+        }
+
+        if direction != nil {
+            lastDiscretePageDate = Date()
         }
 
         onLiveOffsetEnd?(direction)

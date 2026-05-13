@@ -27,7 +27,7 @@ struct FolderGridItemView: View {
             .background {
                 if isDropTarget {
                     RoundedRectangle(cornerRadius: VisualStyle.tileRadius, style: .continuous)
-                        .fill(Color.accentColor.opacity(0.18))
+                        .fill(Color.accentColor.opacity(0.22))
                         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: VisualStyle.tileRadius, style: .continuous))
                 }
             }
@@ -42,8 +42,8 @@ struct FolderGridItemView: View {
             }
         }
         .buttonStyle(.plain)
-        .scaleEffect(isDropTarget ? 1.04 : 1)
-        .animation(.smooth(duration: 0.18), value: isDropTarget)
+        .scaleEffect(isDropTarget ? 1.08 : 1)
+        .animation(.interactiveSpring(response: 0.24, dampingFraction: 0.78, blendDuration: 0.04), value: isDropTarget)
         .accessibilityLabel(folder.name)
     }
 }

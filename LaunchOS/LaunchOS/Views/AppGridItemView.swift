@@ -35,17 +35,17 @@ struct AppGridItemView: View {
                 if canReorder || isFolderDropTarget {
                     RoundedRectangle(cornerRadius: VisualStyle.tileRadius, style: .continuous)
                         .stroke(
-                            Color.accentColor.opacity(isFolderDropTarget ? 0.72 : (isDragging ? 0.35 : 0)),
+                            Color.accentColor.opacity(isFolderDropTarget ? 0.72 : 0),
                             lineWidth: isFolderDropTarget ? 2 : 1
                         )
                 }
             }
         }
         .buttonStyle(.plain)
-        .opacity(isDragging ? 0.38 : 1)
-        .scaleEffect(isFolderDropTarget ? 1.04 : (isDragging ? 0.97 : 1))
-        .animation(.smooth(duration: 0.18), value: isDragging)
-        .animation(.smooth(duration: 0.18), value: isFolderDropTarget)
+        .opacity(isDragging ? 0.08 : 1)
+        .scaleEffect(isFolderDropTarget ? 1.05 : (isDragging ? 0.88 : 1))
+        .animation(.interactiveSpring(response: 0.24, dampingFraction: 0.78, blendDuration: 0.04), value: isDragging)
+        .animation(.interactiveSpring(response: 0.22, dampingFraction: 0.82, blendDuration: 0.04), value: isFolderDropTarget)
         .accessibilityLabel(app.alias ?? app.displayName)
     }
 }

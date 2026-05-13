@@ -61,8 +61,14 @@ struct FolderOverlayView: View {
                             model.finishDragging()
                         } launch: {
                             model.launch(app)
+                        } updateDraggingPreview: { locationInWindow, cursorOffsetFromCenter in
+                            model.updateDragPreview(
+                                appID: app.id,
+                                locationInWindow: locationInWindow,
+                                cursorOffsetFromCenter: cursorOffsetFromCenter
+                            )
                         } hoverDragging: { _ in
-                            withAnimation(.snappy(duration: 0.16)) {
+                            withAnimation(reorderAnimation) {
                                 model.moveDraggingFolderApp(over: app.id, in: folder.id)
                             }
                         } performDraggingDrop: { _ in
@@ -73,7 +79,7 @@ struct FolderOverlayView: View {
                     .launcherAppContextMenu(for: app, model: model)
                 }
             }
-            .animation(reduceMotion ? nil : .snappy(duration: 0.20), value: model.openedFolderApps.map(\.id))
+            .animation(reorderAnimation, value: model.openedFolderApps.map(\.id))
         }
         .padding(24)
         .frame(width: 740)
@@ -82,8 +88,11 @@ struct FolderOverlayView: View {
         .background {
             FolderDragExitMonitorView(
                 isEnabled: model.draggingSourceFolderID == folder.id,
+                onOutsideClick: {
+                    model.closeFolder()
+                },
                 onExit: {
-                    withAnimation(reduceMotion ? nil : .snappy(duration: 0.24)) {
+                    withAnimation(reorderAnimation) {
                         model.moveDraggingFolderAppToTopLevel()
                     }
                 }
@@ -91,21 +100,28 @@ struct FolderOverlayView: View {
         }
         .accessibilityElement(children: .contain)
     }
+
+    private var reorderAnimation: Animation? {
+        reduceMotion ? nil : .interactiveSpring(response: 0.34, dampingFraction: 0.82, blendDuration: 0.04)
+    }
 }
 
 private struct FolderDragExitMonitorView: NSViewRepresentable {
     let isEnabled: Bool
+    let onOutsideClick: () -> Void
     let onExit: () -> Void
 
     func makeNSView(context: Context) -> FolderDragExitMonitorNSView {
         let view = FolderDragExitMonitorNSView()
         view.isEnabled = isEnabled
+        view.onOutsideClick = onOutsideClick
         view.onExit = onExit
         return view
     }
 
     func updateNSView(_ nsView: FolderDragExitMonitorNSView, context: Context) {
         nsView.isEnabled = isEnabled
+        nsView.onOutsideClick = onOutsideClick
         nsView.onExit = onExit
 
         if !isEnabled {
@@ -116,6 +132,7 @@ private struct FolderDragExitMonitorView: NSViewRepresentable {
 
 private final class FolderDragExitMonitorNSView: NSView {
     var isEnabled = false
+    var onOutsideClick: (() -> Void)?
     var onExit: (() -> Void)?
 
     private var dragMonitor: Any?
@@ -149,13 +166,23 @@ private final class FolderDragExitMonitorNSView: NSView {
             return
         }
 
-        dragMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDragged, .leftMouseUp]) { [weak self] event in
+        dragMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp]) { [weak self] event in
             self?.handle(event)
             return event
         }
     }
 
     private func handle(_ event: NSEvent) {
+        if event.type == .leftMouseDown, event.window === window {
+            let localPoint = convert(event.locationInWindow, from: nil)
+
+            if !bounds.contains(localPoint) {
+                onOutsideClick?()
+            }
+
+            return
+        }
+
         guard
             isEnabled,
             !hasExited,

@@ -9,6 +9,7 @@ struct LauncherSettings: Codable, Equatable, Sendable {
     var isFullScreenModeEnabled = false
     var backgroundStyle = LauncherBackgroundStyle.systemWallpaper
     var isWallpaperBlurred = true
+    var glassMaterialStrength = 0.55
     var hotCorner = HotCorner.topRight
     var displayStrategy = LauncherDisplayStrategy.pointer
 
@@ -21,6 +22,7 @@ struct LauncherSettings: Codable, Equatable, Sendable {
         isFullScreenModeEnabled: Bool = false,
         backgroundStyle: LauncherBackgroundStyle = .systemWallpaper,
         isWallpaperBlurred: Bool = true,
+        glassMaterialStrength: Double = 0.55,
         hotCorner: HotCorner = .topRight,
         displayStrategy: LauncherDisplayStrategy = .pointer
     ) {
@@ -32,6 +34,7 @@ struct LauncherSettings: Codable, Equatable, Sendable {
         self.isFullScreenModeEnabled = isFullScreenModeEnabled
         self.backgroundStyle = backgroundStyle
         self.isWallpaperBlurred = isWallpaperBlurred
+        self.glassMaterialStrength = glassMaterialStrength
         self.hotCorner = hotCorner
         self.displayStrategy = displayStrategy
     }
@@ -59,6 +62,10 @@ struct LauncherSettings: Codable, Equatable, Sendable {
             forKey: .backgroundStyle
         ) ?? .systemWallpaper
         isWallpaperBlurred = try container.decodeIfPresent(Bool.self, forKey: .isWallpaperBlurred) ?? true
+        glassMaterialStrength = try container.decodeIfPresent(
+            Double.self,
+            forKey: .glassMaterialStrength
+        ) ?? 0.55
         hotCorner = try container.decodeIfPresent(HotCorner.self, forKey: .hotCorner) ?? .topRight
         displayStrategy = try container.decodeIfPresent(
             LauncherDisplayStrategy.self,

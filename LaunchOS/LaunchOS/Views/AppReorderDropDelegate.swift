@@ -30,7 +30,7 @@ struct AppReorderDropDelegate: DropDelegate {
         }
 
         if shouldCreateFolder(info: info) {
-            withAnimation(.snappy(duration: 0.18)) {
+            withAnimation(.interactiveSpring(response: 0.34, dampingFraction: 0.82, blendDuration: 0.04)) {
                 model.groupDraggingApp(with: targetItem)
             }
         }
@@ -45,10 +45,10 @@ struct AppReorderDropDelegate: DropDelegate {
         }
 
         if isFolderDrop(info: info) {
-            model.previewFolderDrop(on: targetItem.id)
+            model.previewFolderDrop(on: targetItem.id, activatesImmediately: targetItem.kind == .folder)
         } else {
             model.clearFolderDropTarget(for: targetItem.id)
-            withAnimation(.snappy(duration: 0.16)) {
+            withAnimation(.interactiveSpring(response: 0.34, dampingFraction: 0.82, blendDuration: 0.04)) {
                 model.moveDraggingApp(over: targetItem.id)
             }
         }
@@ -60,7 +60,13 @@ struct AppReorderDropDelegate: DropDelegate {
         }
 
         let location = info.location
-        return CGRect(x: 12, y: 0, width: 132, height: 132).contains(location)
+
+        switch targetItem.kind {
+        case .folder:
+            return CGRect(x: 0, y: 0, width: 156, height: 172).contains(location)
+        case .app:
+            return CGRect(x: 12, y: 20, width: 132, height: 132).contains(location)
+        }
     }
 
     private func shouldCreateFolder(info: DropInfo) -> Bool {
@@ -85,7 +91,7 @@ struct AppGridDropDelegate: DropDelegate {
             return false
         }
 
-        withAnimation(.snappy(duration: 0.18)) {
+        withAnimation(.interactiveSpring(response: 0.34, dampingFraction: 0.82, blendDuration: 0.04)) {
             model.moveDraggingAppToEnd()
         }
         model.finishDragging()
@@ -100,6 +106,7 @@ struct NativeAppDragSourceView: NSViewRepresentable {
     let beginDragging: () -> Void
     let finishDragging: () -> Void
     let launch: () -> Void
+    let updateDraggingPreview: (CGPoint, CGSize) -> Void
     let hoverDragging: (CGPoint) -> Void
     let performDraggingDrop: (CGPoint) -> Void
 
@@ -111,6 +118,7 @@ struct NativeAppDragSourceView: NSViewRepresentable {
         view.beginDragging = beginDragging
         view.finishDragging = finishDragging
         view.launch = launch
+        view.updateDraggingPreview = updateDraggingPreview
         view.hoverDragging = hoverDragging
         view.performDraggingDrop = performDraggingDrop
         return view
@@ -123,6 +131,7 @@ struct NativeAppDragSourceView: NSViewRepresentable {
         nsView.beginDragging = beginDragging
         nsView.finishDragging = finishDragging
         nsView.launch = launch
+        nsView.updateDraggingPreview = updateDraggingPreview
         nsView.hoverDragging = hoverDragging
         nsView.performDraggingDrop = performDraggingDrop
     }
@@ -132,6 +141,7 @@ final class NativeAppDragSourceNSView: NSView, NSDraggingSource {
     private static var activeDragAppID: AppRecord.ID?
     private static var isManualDragActive = false
     private static var didHandleManualDrop = false
+    private static var suppressedMouseUpEventNumber: Int?
 
     var appID = ""
     var icon = NSImage()
@@ -139,11 +149,13 @@ final class NativeAppDragSourceNSView: NSView, NSDraggingSource {
     var beginDragging: (() -> Void)?
     var finishDragging: (() -> Void)?
     var launch: (() -> Void)?
+    var updateDraggingPreview: ((CGPoint, CGSize) -> Void)?
     var hoverDragging: ((CGPoint) -> Void)?
     var performDraggingDrop: ((CGPoint) -> Void)?
 
     private var dragEventMonitor: Any?
     private var mouseDownLocationInWindow: CGPoint?
+    private var activeCursorOffsetFromCenter: CGSize = .zero
     private var isDraggingSessionActive = false
     private let dragThreshold: CGFloat = 4
 
@@ -210,7 +222,11 @@ final class NativeAppDragSourceNSView: NSView, NSDraggingSource {
 
     override func mouseDragged(with event: NSEvent) {
         if Self.isManualDragActive {
-            updateManualDrag(with: event)
+            if Self.activeDragAppID == appID {
+                publishDragPreview(with: event)
+            } else {
+                updateManualDrag(with: event)
+            }
         } else {
             startManualDraggingIfNeeded(with: event, allowsImmediateStart: false)
         }
@@ -225,6 +241,10 @@ final class NativeAppDragSourceNSView: NSView, NSDraggingSource {
         defer {
             mouseDownLocationInWindow = nil
             isDraggingSessionActive = false
+        }
+
+        guard !Self.shouldSuppressClick(for: event) else {
+            return
         }
 
         guard isEnabled else {
@@ -251,6 +271,18 @@ final class NativeAppDragSourceNSView: NSView, NSDraggingSource {
         }
 
         if Self.isManualDragActive {
+            if Self.activeDragAppID == appID {
+                switch event.type {
+                case .leftMouseDragged:
+                    publishDragPreview(with: event)
+                case .leftMouseUp:
+                    finishManualDragIfNeeded(with: event)
+                default:
+                    break
+                }
+                return
+            }
+
             switch event.type {
             case .leftMouseDragged:
                 updateManualDrag(with: event)
@@ -324,7 +356,7 @@ final class NativeAppDragSourceNSView: NSView, NSDraggingSource {
         if activeDragAppID != appID, containsWindowLocation(event.locationInWindow) {
             Self.didHandleManualDrop = true
             performDraggingDrop?(convert(event.locationInWindow, from: nil))
-            Self.clearActiveDrag()
+            Self.clearActiveDrag(suppressMouseUpEvent: event)
             mouseDownLocationInWindow = nil
             isDraggingSessionActive = false
             return
@@ -345,7 +377,7 @@ final class NativeAppDragSourceNSView: NSView, NSDraggingSource {
             }
 
             self.finishDragging?()
-            Self.clearActiveDrag()
+            Self.clearActiveDrag(suppressMouseUpEvent: event)
             self.mouseDownLocationInWindow = nil
             self.isDraggingSessionActive = false
         }
@@ -364,7 +396,22 @@ final class NativeAppDragSourceNSView: NSView, NSDraggingSource {
         Self.isManualDragActive = true
         Self.didHandleManualDrop = false
         isDraggingSessionActive = true
+        activeCursorOffsetFromCenter = cursorOffsetFromCenter(for: event)
         beginDragging?()
+        publishDragPreview(with: event)
+    }
+
+    private func publishDragPreview(with event: NSEvent) {
+        updateDraggingPreview?(event.locationInWindow, activeCursorOffsetFromCenter)
+    }
+
+    private func cursorOffsetFromCenter(for event: NSEvent) -> CGSize {
+        let frameInWindow = convert(bounds, to: nil)
+
+        return CGSize(
+            width: event.locationInWindow.x - frameInWindow.midX,
+            height: event.locationInWindow.y - frameInWindow.midY
+        )
     }
 
     private func removeDragEventMonitor() {
@@ -376,9 +423,24 @@ final class NativeAppDragSourceNSView: NSView, NSDraggingSource {
         self.dragEventMonitor = nil
     }
 
-    private static func clearActiveDrag() {
+    private static func clearActiveDrag(suppressMouseUpEvent event: NSEvent? = nil) {
+        if let event, event.type == .leftMouseUp {
+            suppressedMouseUpEventNumber = event.eventNumber
+        }
+
         activeDragAppID = nil
         isManualDragActive = false
         didHandleManualDrop = false
+    }
+
+    private static func shouldSuppressClick(for event: NSEvent) -> Bool {
+        guard
+            event.type == .leftMouseUp,
+            suppressedMouseUpEventNumber == event.eventNumber
+        else {
+            return false
+        }
+
+        return true
     }
 }
