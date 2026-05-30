@@ -7,6 +7,14 @@ struct AppDragPreviewState: Equatable {
     var cursorOffsetFromCenter: CGSize
 }
 
+private struct DragRestoreState {
+    var folders: [LauncherFolder]
+    var orderedItemIDs: [LauncherItem.ID]
+    var currentPage: Int
+    var selectedItemID: LauncherItem.ID?
+    var openedFolderID: LauncherFolder.ID?
+}
+
 @MainActor
 @Observable
 final class LauncherModel {
@@ -39,6 +47,7 @@ final class LauncherModel {
     @ObservationIgnored private var hasLoadedLayout = false
     @ObservationIgnored private var folderDropPreviewTask: Task<Void, Never>?
     @ObservationIgnored private var pendingFolderDropTargetID: LauncherItem.ID?
+    @ObservationIgnored private var dragRestoreState: DragRestoreState?
 
     init() {
         scanner = AppScanner()
@@ -393,9 +402,11 @@ final class LauncherModel {
             draggingAppID = nil
             draggingSourceFolderID = nil
             dragPreviewState = nil
+            dragRestoreState = nil
             return
         }
 
+        captureDragRestoreStateIfNeeded()
         draggingAppID = appID
         draggingSourceFolderID = nil
         selectedItemID = appID
@@ -410,9 +421,11 @@ final class LauncherModel {
             draggingAppID = nil
             draggingSourceFolderID = nil
             dragPreviewState = nil
+            dragRestoreState = nil
             return
         }
 
+        captureDragRestoreStateIfNeeded()
         draggingAppID = appID
         draggingSourceFolderID = folderID
         selectedItemID = appID
@@ -616,6 +629,7 @@ final class LauncherModel {
             draggingSourceFolderID = nil
             dragPreviewState = nil
             clearFolderDropTarget()
+            dragRestoreState = nil
             return
         }
 
@@ -623,10 +637,27 @@ final class LauncherModel {
         draggingSourceFolderID = nil
         dragPreviewState = nil
         clearFolderDropTarget()
+        dragRestoreState = nil
 
         if saveChanges {
             saveCurrentLayout()
         }
+    }
+
+    func cancelDraggingRestoringLayout() {
+        if let dragRestoreState {
+            folders = dragRestoreState.folders
+            orderedItemIDs = dragRestoreState.orderedItemIDs
+            currentPage = min(dragRestoreState.currentPage, pageCount - 1)
+            selectedItemID = dragRestoreState.selectedItemID
+            openedFolderID = dragRestoreState.openedFolderID
+        }
+
+        draggingAppID = nil
+        draggingSourceFolderID = nil
+        dragPreviewState = nil
+        clearFolderDropTarget()
+        dragRestoreState = nil
     }
 
     func launch(_ item: LauncherItem) {
@@ -1030,6 +1061,20 @@ final class LauncherModel {
                 }
             }
         }
+    }
+
+    private func captureDragRestoreStateIfNeeded() {
+        guard dragRestoreState == nil else {
+            return
+        }
+
+        dragRestoreState = DragRestoreState(
+            folders: folders,
+            orderedItemIDs: normalizedTopLevelItemIDs(),
+            currentPage: currentPage,
+            selectedItemID: selectedItemID,
+            openedFolderID: openedFolderID
+        )
     }
 
     private func currentLayoutSnapshot() -> LauncherLayoutSnapshot {

@@ -58,7 +58,7 @@ enum LauncherWindowController {
         window.isOpaque = false
         window.backgroundColor = .clear
         window.hasShadow = false
-        window.level = .screenSaver
+        window.level = isFullScreenModeEnabled ? .screenSaver : .floating
         window.collectionBehavior = [
             .canJoinAllSpaces,
             .fullScreenAuxiliary,
@@ -76,8 +76,30 @@ enum LauncherWindowController {
         }
 
         if let screen = screen ?? DisplayService.targetScreen(for: displayStrategy) ?? window.screen {
-            window.setFrame(screen.frame, display: true)
+            window.setFrame(launcherFrame(on: screen), display: true)
         }
+    }
+
+    private static func launcherFrame(on screen: NSScreen) -> NSRect {
+        guard !isFullScreenModeEnabled else {
+            return screen.frame
+        }
+
+        let frame = screen.frame
+        let visibleFrame = screen.visibleFrame
+        var launcherFrame = frame
+
+        if visibleFrame.minX > frame.minX {
+            launcherFrame.origin.x = visibleFrame.minX
+            launcherFrame.size.width = frame.maxX - visibleFrame.minX
+        } else if visibleFrame.maxX < frame.maxX {
+            launcherFrame.size.width = visibleFrame.maxX - frame.minX
+        } else if visibleFrame.minY > frame.minY {
+            launcherFrame.origin.y = visibleFrame.minY
+            launcherFrame.size.height = frame.maxY - visibleFrame.minY
+        }
+
+        return launcherFrame
     }
 
     private static func applyLauncherPresentationOptions() {
@@ -85,10 +107,7 @@ enum LauncherWindowController {
             previousPresentationOptions = NSApp.presentationOptions
         }
 
-        NSApp.presentationOptions = [
-            .hideDock,
-            .hideMenuBar
-        ]
+        NSApp.presentationOptions = isFullScreenModeEnabled ? [.hideDock, .hideMenuBar] : []
     }
 
     private static func restorePresentationOptions() {

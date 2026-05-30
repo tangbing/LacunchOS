@@ -684,12 +684,15 @@ struct ContentView: View {
                 .overlay {
                     NativeAppDragSourceView(
                         appID: app.id,
+                        appURL: app.url,
                         icon: AppIconCache.icon(for: app.path),
                         isEnabled: model.canReorderApps
                     ) {
                         model.beginDragging(app.id)
                     } finishDragging: {
                         model.finishDragging()
+                    } cancelDragging: {
+                        model.cancelDraggingRestoringLayout()
                     } launch: {
                         noteInteractiveGridTap()
                         model.launch(app)
@@ -733,6 +736,7 @@ struct ContentView: View {
                 .overlay {
                     NativeAppDragSourceView(
                         appID: folder.id,
+                        appURL: nil,
                         icon: NSImage(),
                         isEnabled: model.canReorderApps
                             && model.draggingAppID != nil
@@ -740,6 +744,8 @@ struct ContentView: View {
                     ) {
                     } finishDragging: {
                         model.finishDragging()
+                    } cancelDragging: {
+                        model.cancelDraggingRestoringLayout()
                     } launch: {
                     } updateDraggingPreview: { _, _ in
                     } hoverDragging: { location in
@@ -1224,10 +1230,11 @@ private final class ScrollWheelPagingNSView: NSView {
     private var lastDiscretePageDate = Date.distantPast
     private var phaseLessResetWorkItem: DispatchWorkItem?
 
-    private let precisePagingThreshold: CGFloat = 32
-    private let liveOffsetMultiplier: CGFloat = 2.35
-    private let discretePagingThreshold: CGFloat = 4
-    private let discretePagingCooldown: TimeInterval = 0.52
+    private let precisePagingThreshold: CGFloat = 30
+    private let liveOffsetMultiplier: CGFloat = 2.45
+    private let discretePagingThreshold: CGFloat = 5
+    private let discretePagingCooldown: TimeInterval = 0.5
+    private let horizontalDominanceRatio: CGFloat = 0.82
     private let phaseLessGestureResetDelay: TimeInterval = 0.18
 
     override func hitTest(_ point: NSPoint) -> NSView? {
@@ -1316,22 +1323,14 @@ private final class ScrollWheelPagingNSView: NSView {
 
     private func pagingIntent(for event: NSEvent) -> CGFloat? {
         let horizontalIntent = event.scrollingDeltaX == 0 ? event.deltaX : event.scrollingDeltaX
-        let verticalIntent = abs(event.scrollingDeltaY == 0 ? event.deltaY : event.scrollingDeltaY)
-        let minimumIntent: CGFloat = event.hasPreciseScrollingDeltas ? 0.45 : 2
-        let verticalTolerance: CGFloat = event.hasPreciseScrollingDeltas ? 0.48 : 0.72
+        let verticalIntent = event.scrollingDeltaY == 0 ? event.deltaY : event.scrollingDeltaY
+        let minimumIntent: CGFloat = event.hasPreciseScrollingDeltas ? 0.5 : 2.5
 
-        guard abs(horizontalIntent) >= max(minimumIntent, verticalIntent * verticalTolerance) else {
-            return nil
-        }
-
-        return horizontalIntent
+        return pagingIntent(horizontal: horizontalIntent, vertical: verticalIntent, minimum: minimumIntent)
     }
 
     private func handleSwipe(_ event: NSEvent) -> Bool {
-        let horizontalIntent = event.deltaX
-        let verticalIntent = abs(event.deltaY)
-
-        guard abs(horizontalIntent) >= max(0.18, verticalIntent * 0.82) else {
+        guard let pagingIntent = pagingIntent(horizontal: event.deltaX, vertical: event.deltaY, minimum: 0.18) else {
             return false
         }
 
@@ -1343,9 +1342,8 @@ private final class ScrollWheelPagingNSView: NSView {
         finishPreciseGesture(shouldCommit: false)
         lastDiscretePageDate = now
 
-        let direction: PagingDirection = horizontalIntent < 0 ? .next : .previous
-        let previewOffset = direction == .next ? -precisePagingThreshold * liveOffsetMultiplier : precisePagingThreshold * liveOffsetMultiplier
-        onLiveOffsetChange?(previewOffset)
+        let direction = pagingDirection(for: pagingIntent)
+        onLiveOffsetChange?(previewOffset(for: direction))
         onLiveOffsetEnd?(direction)
         return true
     }
@@ -1361,7 +1359,7 @@ private final class ScrollWheelPagingNSView: NSView {
         }
 
         lastDiscretePageDate = now
-        onPage?(pagingIntent > 0 ? .next : .previous)
+        onPage?(pagingDirection(for: pagingIntent))
     }
 
     private func handlePreciseScroll(_ pagingIntent: CGFloat, phase: NSEvent.Phase) {
@@ -1370,7 +1368,7 @@ private final class ScrollWheelPagingNSView: NSView {
         }
 
         accumulatedPagingIntent += pagingIntent
-        onLiveOffsetChange?(-accumulatedPagingIntent * liveOffsetMultiplier)
+        onLiveOffsetChange?(liveOffset(for: accumulatedPagingIntent))
 
         if phase.contains(.cancelled) {
             finishPreciseGesture(shouldCommit: false)
@@ -1408,10 +1406,8 @@ private final class ScrollWheelPagingNSView: NSView {
         phaseLessResetWorkItem = nil
 
         let direction: PagingDirection?
-        if shouldCommit, accumulatedPagingIntent >= precisePagingThreshold {
-            direction = .next
-        } else if shouldCommit, accumulatedPagingIntent <= -precisePagingThreshold {
-            direction = .previous
+        if shouldCommit, abs(accumulatedPagingIntent) >= precisePagingThreshold {
+            direction = pagingDirection(for: accumulatedPagingIntent)
         } else {
             direction = nil
         }
@@ -1423,6 +1419,31 @@ private final class ScrollWheelPagingNSView: NSView {
         onLiveOffsetEnd?(direction)
         accumulatedPagingIntent = 0
         hasActivePreciseGesture = false
+    }
+
+    private func pagingIntent(horizontal: CGFloat, vertical: CGFloat, minimum: CGFloat) -> CGFloat? {
+        guard abs(horizontal) >= max(minimum, abs(vertical) * horizontalDominanceRatio) else {
+            return nil
+        }
+
+        return horizontal
+    }
+
+    private func pagingDirection(for pagingIntent: CGFloat) -> PagingDirection {
+        pagingIntent > 0 ? .next : .previous
+    }
+
+    private func liveOffset(for pagingIntent: CGFloat) -> CGFloat {
+        -pagingIntent * liveOffsetMultiplier
+    }
+
+    private func previewOffset(for direction: PagingDirection) -> CGFloat {
+        switch direction {
+        case .next:
+            return liveOffset(for: precisePagingThreshold)
+        case .previous:
+            return liveOffset(for: -precisePagingThreshold)
+        }
     }
 
     private func removeScrollMonitor() {

@@ -53,12 +53,15 @@ struct FolderOverlayView: View {
                     .overlay {
                         NativeAppDragSourceView(
                             appID: app.id,
+                            appURL: app.url,
                             icon: AppIconCache.icon(for: app.path),
                             isEnabled: model.canReorderApps
                         ) {
                             model.beginDraggingFolderApp(app.id, in: folder.id)
                         } finishDragging: {
                             model.finishDragging()
+                        } cancelDragging: {
+                            model.cancelDraggingRestoringLayout()
                         } launch: {
                             model.launch(app)
                         } updateDraggingPreview: { locationInWindow, cursorOffsetFromCenter in
